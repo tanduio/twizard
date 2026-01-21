@@ -1,63 +1,61 @@
 package main
 
 import (
+	"context"
 	"log"
-	"net"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
 
 	flag "github.com/spf13/pflag"
+	"github.com/tanduio/twizard/internal/server"
 )
 
 var (
-	server string
+	address string
 )
 
 func init() {
-	flag.StringVarP(&server, "server", "s", "", "sets the listen address for the incoming traffic")
+	flag.StringVarP(&address, "address", "a", "", "sets the listen address for the incoming traffic")
 
 	flag.Parse()
 }
 
 func main() {
-	l, err := net.Listen("tcp", server)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	srv, err := server.New(address)
 	if err != nil {
-		panic(err)
+		log.Fatal("server creating error: ", err)
 	}
-	defer l.Close()
 
-	for {
-		conn, err := l.Accept()
-		if err != nil {
-			panic(err)
+	wg := sync.WaitGroup{}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer cancel()
+
+		if err := srv.Serve(ctx); err != nil {
+			log.Println("server was closed with error: ", err)
 		}
+	}()
 
-		log.Printf("New VPN client: %v", conn.RemoteAddr())
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer cancel()
 
-		go handleConnection(conn)
-	}
-}
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-func handleConnection(conn net.Conn) {
-	defer conn.Close()
+		<-sigChan
+	}()
 
-	buffer := make([]byte, 1500)
+	wg.Wait()
 
-	for {
-		n, err := conn.Read(buffer)
-		if err != nil {
-			log.Printf("Client %v disconnected: %v", conn.RemoteAddr(), err)
-			return
-		}
-
-		log.Printf("From %v: %d bytes", conn.RemoteAddr(), n)
-
-		packet := buffer[:n]
-
-		_, err = conn.Write(packet)
-		if err != nil {
-			log.Printf("Error echoing to client: %v", err)
-			return
-		}
-
-		log.Printf("Echoed %d bytes back", n)
+	if err := srv.Shutdown(); err != nil {
+		log.Println("server shutdown error: ", err)
 	}
 }
