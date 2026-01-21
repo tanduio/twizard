@@ -3,7 +3,6 @@ package main
 import (
 	"log"
 	"net"
-	"os"
 
 	flag "github.com/spf13/pflag"
 )
@@ -25,21 +24,19 @@ func main() {
 	}
 	defer l.Close()
 
-	srvl := log.New(os.Stdout, "server ", 0)
-
 	for {
 		conn, err := l.Accept()
 		if err != nil {
 			panic(err)
 		}
 
-		srvl.Printf("New VPN client: %v", conn.RemoteAddr())
+		log.Printf("New VPN client: %v", conn.RemoteAddr())
 
-		go handleConnection(conn, srvl)
+		go handleConnection(conn)
 	}
 }
 
-func handleConnection(conn net.Conn, logger *log.Logger) {
+func handleConnection(conn net.Conn) {
 	defer conn.Close()
 
 	buffer := make([]byte, 1500)
@@ -47,20 +44,20 @@ func handleConnection(conn net.Conn, logger *log.Logger) {
 	for {
 		n, err := conn.Read(buffer)
 		if err != nil {
-			logger.Printf("Client %v disconnected: %v", conn.RemoteAddr(), err)
+			log.Printf("Client %v disconnected: %v", conn.RemoteAddr(), err)
 			return
 		}
 
-		logger.Printf("From %v: %d bytes", conn.RemoteAddr(), n)
+		log.Printf("From %v: %d bytes", conn.RemoteAddr(), n)
 
 		packet := buffer[:n]
 
 		_, err = conn.Write(packet)
 		if err != nil {
-			logger.Printf("Error echoing to client: %v", err)
+			log.Printf("Error echoing to client: %v", err)
 			return
 		}
 
-		logger.Printf("Echoed %d bytes back", n)
+		log.Printf("Echoed %d bytes back", n)
 	}
 }

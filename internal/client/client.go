@@ -111,7 +111,7 @@ func ForwardTunToTCP(tun *os.File, conn net.Conn) {
 				continue
 			}
 
-			fmt.Printf("[→] TUN->TCP: %s → %s (proto:%d, %d bytes): version[%d], \n%v\n", src, dst, proto, n, packet[0]>>4, packet)
+			log.Printf("[→] TUN->TCP: %s → %s (proto:%d, %d bytes): version[%d], \n%v\n", src, dst, proto, n, packet[0]>>4, packet)
 		}
 
 		_, err = conn.Write(packet)
@@ -134,13 +134,13 @@ func ForwardTCPToTun(conn net.Conn, tun *os.File) {
 
 		packet := buffer[:n]
 
-		fmt.Printf("client response; receive [%d] bytes\n", n)
+		log.Printf("[client response] received %d] bytes\n", n)
 
 		if len(packet) >= 20 {
 			src := fmt.Sprintf("%d.%d.%d.%d", packet[12], packet[13], packet[14], packet[15])
 			dst := fmt.Sprintf("%d.%d.%d.%d", packet[16], packet[17], packet[18], packet[19])
 			proto := packet[9]
-			fmt.Printf("[←] TCP->TUN: %s → %s (proto:%d, %d bytes)\n", src, dst, proto, n)
+			log.Printf("[←] TCP->TUN: %s → %s (proto:%d, %d bytes)\n", src, dst, proto, n)
 		}
 
 		_, err = tun.Write(packet)
