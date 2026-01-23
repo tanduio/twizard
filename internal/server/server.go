@@ -19,23 +19,31 @@ type Server struct {
 	activeConn   map[net.Conn]struct{}
 	activeConnWG sync.WaitGroup
 
+	address string
+
 	mu         sync.Mutex
 	inShutdown atomic.Bool
 }
 
-func New(address string) (*Server, error) {
-	l, err := net.Listen("tcp", address)
-	if err != nil {
-		return nil, err
-	}
-
+func New(address string) *Server {
 	return &Server{
-		l:          l,
-		activeConn: make(map[net.Conn]struct{}),
-	}, nil
+		address: address,
+	}
 }
 
-func (s *Server) Serve(ctx context.Context) error {
+func (s *Server) ListenAndServe(ctx context.Context) error {
+	l, err := net.Listen("tcp", s.address)
+	if err != nil {
+		return err
+	}
+
+	s.l = l
+	s.activeConn = make(map[net.Conn]struct{})
+
+	return s.serve(ctx)
+}
+
+func (s *Server) serve(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -44,7 +52,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		default:
 			conn, err := s.l.Accept()
 			if err != nil {
-				panic(err)
+				return err
 			}
 
 			if s.shuttingDown() {

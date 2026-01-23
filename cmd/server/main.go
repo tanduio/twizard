@@ -5,7 +5,6 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 
 	flag "github.com/spf13/pflag"
@@ -23,37 +22,20 @@ func init() {
 }
 
 func main() {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx := context.Background()
 
-	srv, err := server.New(address)
-	if err != nil {
-		log.Fatal("server creating error: ", err)
-	}
+	srv := server.New(address)
 
-	wg := sync.WaitGroup{}
-
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
-		defer cancel()
-
-		if err := srv.Serve(ctx); err != nil {
+		if err := srv.ListenAndServe(ctx); err != nil {
 			log.Println("server was closed with error: ", err)
 		}
 	}()
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		defer cancel()
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-		<-sigChan
-	}()
-
-	wg.Wait()
+	<-sigChan
 
 	if err := srv.Shutdown(); err != nil {
 		log.Println("server shutdown error: ", err)
