@@ -1,29 +1,33 @@
 package main
 
 import (
+	"flag"
 	"log"
 	"net"
 	"sync"
-
-	flag "github.com/spf13/pflag"
+	"syscall"
+	"time"
 
 	"github.com/tanduio/twizard/internal/client"
+	"github.com/tanduio/twizard/internal/tnet"
 )
 
 var (
-	proxy  string
-	device string
+	proxy             string
+	tunInterface      string
+	outboundInterface string
 )
 
 func init() {
-	flag.StringVarP(&proxy, "proxy", "p", "", "defines the target server for traffic forwarding")
-	flag.StringVarP(&device, "device", "d", "", "specifies the outgoing interface (e.g., tun0)")
+	flag.StringVar(&proxy, "proxy", "", "server address (e.g., vpn.example.com:1194)")
+	flag.StringVar(&tunInterface, "tun", "", "TUN interface to read traffic from (e.g., tun0)")
+	flag.StringVar(&outboundInterface, "outbound-iface", "", "Network interface for connecting to server (e.g., eth0, wlan0)")
 
 	flag.Parse()
 }
 
 func main() {
-	tun, err := client.OpenTunInterface(device)
+	tun, err := tnet.OpenRawInterface(tunInterface)
 	if err != nil {
 		panic(err)
 	}
@@ -35,7 +39,20 @@ func main() {
 		log.Fatal("proxy cannot be empty")
 	}
 
-	conn, err := net.Dial("tcp", proxy)
+	log.Println("Connecting to the server")
+
+	dialer := net.Dialer{
+		Timeout: time.Second * 5,
+		Control: func(network, address string, c syscall.RawConn) error {
+			return c.Control(func(fd uintptr) {
+				syscall.SetsockoptString(int(fd), syscall.SOL_SOCKET, syscall.SO_BINDTODEVICE, outboundInterface)
+			})
+		},
+	}
+
+	log.Println("Connection established")
+
+	conn, err := dialer.Dial("tcp", proxy)
 	if err != nil {
 		log.Fatal("Failed to connect to server:", err)
 	}

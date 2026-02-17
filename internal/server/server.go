@@ -2,12 +2,16 @@ package server
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/tanduio/twizard/internal/tnet"
 )
 
 var (
@@ -20,14 +24,16 @@ type Server struct {
 	activeConnWG sync.WaitGroup
 
 	address string
+	tun     *tnet.Tun
 
 	mu         sync.Mutex
 	inShutdown atomic.Bool
 }
 
-func New(address string) *Server {
+func New(address string, tun *tnet.Tun) *Server {
 	return &Server{
 		address: address,
+		tun:     tun,
 	}
 }
 
@@ -44,6 +50,8 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 }
 
 func (s *Server) serve(ctx context.Context) error {
+	go s.tun.StartReader() // TODO graceful shutdown
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -61,7 +69,7 @@ func (s *Server) serve(ctx context.Context) error {
 
 			log.Printf("new client: %v", conn.RemoteAddr())
 
-			go s.handleConnection(conn)
+			go s.handleConnection(ctx, conn)
 		}
 	}
 }
@@ -110,31 +118,58 @@ func (s *Server) shuttingDown() bool {
 	return s.inShutdown.Load()
 }
 
-func (s *Server) handleConnection(conn net.Conn) {
-	defer conn.Close()
+func (s *Server) handleConnection(ctx context.Context, clientConn net.Conn) {
+	defer clientConn.Close()
 
-	s.addConn(conn)
-	defer s.removeConn(conn)
-
-	buffer := make([]byte, 1500)
+	buffer := make([]byte, 4000)
 
 	for {
-		n, err := conn.Read(buffer)
+		fmt.Println("\n=== Reading Request ===")
+		n, err := clientConn.Read(buffer)
 		if err != nil {
-			log.Printf("Client %v disconnected: %v", conn.RemoteAddr(), err)
-			return
+			log.Println("Failed to read from client:", err)
+			break
 		}
 
-		log.Printf("From %v: %d bytes", conn.RemoteAddr(), n)
+		ipPacket := buffer[:n]
 
-		packet := buffer[:n]
+		// Update source IP
+		copy(ipPacket[12:16], net.ParseIP("192.168.69.1").To4())
 
-		_, err = conn.Write(packet)
+		// Recalculate IP checksum
+		ipChecksum := tnet.CalculateIPChecksum(ipPacket[:20])
+		binary.BigEndian.PutUint16(ipPacket[10:12], ipChecksum)
+
+		// Recalculate TCP checksum
+		srcIP := ipPacket[12:16]
+		dstIP := ipPacket[16:20]
+		tcpData := ipPacket[20:]
+		tcpChecksum := tnet.CalculateTCPChecksum(tcpData, srcIP, dstIP)
+		binary.BigEndian.PutUint16(ipPacket[36:38], tcpChecksum)
+
+		src := fmt.Sprintf("%d.%d.%d.%d", ipPacket[12], ipPacket[13], ipPacket[14], ipPacket[15])
+		dst := fmt.Sprintf("%d.%d.%d.%d", ipPacket[16], ipPacket[17], ipPacket[18], ipPacket[19])
+		proto := ipPacket[9]
+
+		log.Printf("[->] TUN->TCP: %s -> %s (proto:%d, %d bytes): version[%d]", src, dst, proto, n, ipPacket[0]>>4)
+
+		ctx, _ := context.WithTimeout(ctx, time.Second*4)
+
+		respCh, err := s.tun.Send(ctx, ipPacket)
 		if err != nil {
-			log.Printf("Error echoing to client: %v", err)
-			return
+			log.Printf("Error writing to TUN: %v", err)
 		}
 
-		log.Printf("Echoed %d bytes back", n)
+		select {
+		case <-ctx.Done():
+			log.Printf("ctx error: %s\n", ctx.Err().Error())
+		case resp := <-respCh:
+			n, err = clientConn.Write(resp)
+			if err != nil {
+				log.Println("Failed to write to client back from destination:", err)
+				return
+			}
+		}
 	}
+	log.Println("Connection closed")
 }

@@ -1,57 +1,15 @@
 package client
 
 import (
-	"errors"
+	"encoding/binary"
 	"fmt"
 	"log"
 	"net"
 	"os"
-	"syscall"
 	"time"
-	"unsafe"
+
+	"github.com/tanduio/twizard/internal/tnet"
 )
-
-const (
-	TUNSETIFF = 0x400454ca
-	IFF_TUN   = 0x0001
-	IFF_TAP   = 0x0002
-	IFF_NO_PI = 0x1000
-	IFNAMSIZ  = 16
-)
-
-var (
-	emptyDeviceErr = errors.New("device can't be empty")
-)
-
-type ifReq struct {
-	Name  [IFNAMSIZ]byte
-	Flags uint16
-	pad   [0x28 - IFNAMSIZ - 2]byte
-}
-
-func OpenTunInterface(device string) (*os.File, error) {
-	if len(device) == 0 {
-		return nil, emptyDeviceErr
-	}
-
-	tunFile, err := os.OpenFile("/dev/net/tun", os.O_RDWR, 0)
-	if err != nil {
-		log.Fatal("Failed to open /dev/net/tun:", err)
-	}
-
-	fd := tunFile.Fd()
-
-	var req ifReq
-	copy(req.Name[:], device)
-	req.Flags = IFF_TUN | IFF_NO_PI
-
-	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, TUNSETIFF, uintptr(unsafe.Pointer(&req)))
-	if errno != 0 {
-		log.Fatal("ioctl TUNSETIFF failed:", errno)
-	}
-
-	return tunFile, nil
-}
 
 func ReadPackets(tunFile *os.File) {
 	buffer := make([]byte, 1500)
@@ -102,16 +60,10 @@ func ForwardTunToTCP(tun *os.File, conn net.Conn) {
 
 		packet := buffer[:n]
 
-		if len(packet) >= 20 {
-			src := fmt.Sprintf("%d.%d.%d.%d", packet[12], packet[13], packet[14], packet[15])
-			dst := fmt.Sprintf("%d.%d.%d.%d", packet[16], packet[17], packet[18], packet[19])
-			proto := packet[9]
+		proto := packet[9]
 
-			if proto != 6 {
-				continue
-			}
-
-			log.Printf("[→] TUN->TCP: %s → %s (proto:%d, %d bytes): version[%d], \n%v\n", src, dst, proto, n, packet[0]>>4, packet)
+		if proto != 6 {
+			continue
 		}
 
 		_, err = conn.Write(packet)
@@ -123,7 +75,7 @@ func ForwardTunToTCP(tun *os.File, conn net.Conn) {
 }
 
 func ForwardTCPToTun(conn net.Conn, tun *os.File) {
-	buffer := make([]byte, 1500)
+	buffer := make([]byte, 4000)
 
 	for {
 		n, err := conn.Read(buffer)
@@ -134,7 +86,21 @@ func ForwardTCPToTun(conn net.Conn, tun *os.File) {
 
 		packet := buffer[:n]
 
-		log.Printf("[client response] received %d] bytes\n", n)
+		ipPacket := packet
+
+		// Update source IP
+		copy(ipPacket[16:20], net.ParseIP("192.168.99.1").To4())
+
+		// Recalculate IP checksum
+		ipChecksum := tnet.CalculateIPChecksum(ipPacket[:20])
+		binary.BigEndian.PutUint16(ipPacket[10:12], ipChecksum)
+
+		// Recalculate TCP checksum
+		srcIP := ipPacket[12:16]
+		dstIP := ipPacket[16:20]
+		tcpData := ipPacket[20:]
+		tcpChecksum := tnet.CalculateTCPChecksum(tcpData, srcIP, dstIP)
+		binary.BigEndian.PutUint16(ipPacket[36:38], tcpChecksum)
 
 		if len(packet) >= 20 {
 			src := fmt.Sprintf("%d.%d.%d.%d", packet[12], packet[13], packet[14], packet[15])
@@ -143,7 +109,7 @@ func ForwardTCPToTun(conn net.Conn, tun *os.File) {
 			log.Printf("[←] TCP->TUN: %s → %s (proto:%d, %d bytes)\n", src, dst, proto, n)
 		}
 
-		_, err = tun.Write(packet)
+		_, err = tun.Write(ipPacket)
 		if err != nil {
 			log.Printf("Error writing to TUN: %v", err)
 		}

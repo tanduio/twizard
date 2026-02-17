@@ -2,21 +2,24 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
-	flag "github.com/spf13/pflag"
 	"github.com/tanduio/twizard/internal/server"
+	"github.com/tanduio/twizard/internal/tnet"
 )
 
 var (
-	address string
+	listen string
+	tun    string
 )
 
 func init() {
-	flag.StringVarP(&address, "address", "a", "", "sets the listen address for the incoming traffic")
+	flag.StringVar(&listen, "listen", "", "local address to listen for connections (e.g., 0.0.0.0:1194)")
+	flag.StringVar(&tun, "tun", "", "TUN interface for routing decapsulated traffic (e.g., tun0)")
 
 	flag.Parse()
 }
@@ -24,7 +27,13 @@ func init() {
 func main() {
 	ctx := context.Background()
 
-	srv := server.New(address)
+	tun, err := tnet.OpenTunInterface(tun)
+	if err != nil {
+		panic(err)
+	}
+	defer tun.Close()
+
+	srv := server.New(listen, tun)
 
 	go func() {
 		if err := srv.ListenAndServe(ctx); err != nil {
